@@ -1,153 +1,105 @@
+// ✅ 必要なライブラリ
 const express = require("express");
-const { Client } = require("@line/bot-sdk");
-const bodyParser = require("body-parser");
-const axios = require("axios");
-const { google } = require("googleapis");
-
+const { GoogleSpreadsheet } = require("google-spreadsheet");
+const { Configuration, OpenAIApi } = require("openai");
+const crypto = require("crypto");
 const app = express();
-app.use(bodyParser.json());
 
-// LINE Bot 設定
-const config = {
-  channelAccessToken: process.env.LINE_ACCESS_TOKEN,
-  channelSecret: process.env.LINE_CHANNEL_SECRET || "",
-};
-const client = new Client(config);
-
-// 環境変数から読み込む
+// ✅ 環境変数
+const LINE_ACCESS_TOKEN = process.env.LINE_ACCESS_TOKEN;
+const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
-const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT); // JSON文字列
+const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
 
-// Google API 認証
-const auth = new google.auth.JWT(
-  GOOGLE_SERVICE_ACCOUNT.client_email,
-  null,
-  GOOGLE_SERVICE_ACCOUNT.private_key,
-  ["https://www.googleapis.com/auth/spreadsheets"]
-);
-const sheets = google.sheets({ version: "v4", auth });
+// ✅ 署名検証用関数
+function validateSignature(signature, body) {
+  const hash = crypto
+    .createHmac("SHA256", LINE_CHANNEL_SECRET)
+    .update(body)
+    .digest("base64");
+  return hash === signature;
+}
 
+// ✅ 生データ保持用
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
+
+// ✅ 受信処理
 app.post("/", async (req, res) => {
-  try {
-    const events = req.body.events;
-    const results = await Promise.all(events.map(handleEvent));
-    res.json(results);
-  } catch (error) {
-    console.error("エラー:", error);
-    res.status(500).send("エラーが発生しました。");
+  const signature = req.headers["x-line-signature"];
+  if (!validateSignature(signature, req.rawBody)) {
+    return res.status(403).send("Invalid signature");
   }
-});
 
-async function handleEvent(event) {
-  if (event.type !== "message" || event.message.type !== "text") return null;
-
-  const userMessage = event.message.text;
+  const event = req.body.events[0];
+  const userMessage = event.message?.text || "メッセージがありません";
   const replyToken = event.replyToken;
 
-  // キャッシュシートからチェック
-  const cached = await checkCache(userMessage);
-  if (cached) {
-    return client.replyMessage(replyToken, {
-      type: "text",
-      text: cached,
-    });
-  }
+  const advice = await getChatGPTAdvice(userMessage);
+  const items = await getProductList();
+  const recommended = recommendItem(userMessage, items);
 
-  // ChatGPTアドバイス
-  const advice = await getAdvice(userMessage);
+  const replyMessage = `${advice}\n\n【おすすめアイテム】\n${recommended}`;
+  await replyToLINE(replyToken, replyMessage);
 
-  // 商品提案
-  const product = await getRecommendedProduct(userMessage);
-
-  const fullReply = `${advice}\n\n【おすすめアイテム】\n${product}`;
-
-  // LINEへ返信
-  await client.replyMessage(replyToken, {
-    type: "text",
-    text: fullReply,
-  });
-
-  // キャッシュ保存
-  await saveToCache(userMessage, fullReply);
-
-  return true;
-}
-
-// ChatGPTからアドバイス取得
-async function getAdvice(userMessage) {
-  const response = await axios.post(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      model: "gpt-3.5-turbo",
-      messages: [
-        {
-          role: "system",
-          content:
-            "あなたは優しく丁寧な風水アドバイザーです。恋愛運・金運・健康運・仕事運などに関する質問に、初心者にもわかりやすくアドバイスをしてください。",
-        },
-        { role: "user", content: userMessage },
-      ],
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  return response.data.choices[0].message.content.trim();
-}
-
-// 商品をスプレッドシートから検索して提案
-async function getRecommendedProduct(userMessage) {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: "商品リスト!A2:C",
-  });
-
-  const items = res.data.values || [];
-  const keyword = userMessage.toLowerCase();
-
-  for (let item of items) {
-    const name = item[0] || "";
-    const description = item[1] || "";
-    const url = item[2] || "";
-    const fullText = (name + description).toLowerCase();
-    if (fullText.includes(keyword)) {
-      return `${name}\n${description}\n購入はこちら: ${url}`;
-    }
-  }
-
-  return "ぴったりの商品は見つかりませんでしたが、今後追加されるかもしれません✨";
-}
-
-// キャッシュから探す
-async function checkCache(message) {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: "キャッシュ!A2:B",
-  });
-
-  const rows = res.data.values || [];
-  const found = rows.find((row) => row[0] === message);
-  return found ? found[1] : null;
-}
-
-// キャッシュに保存
-async function saveToCache(message, response) {
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: "キャッシュ!A:B",
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[message, response]],
-    },
-  });
-}
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server is running on port ${PORT}`);
+  res.send("OK");
 });
+
+// ✅ ChatGPTから風水アドバイスを取得
+async function getChatGPTAdvice(userMessage) {
+  const config = new Configuration({ apiKey: OPENAI_API_KEY });
+  const openai = new OpenAIApi(config);
+  const chat = await openai.createChatCompletion({
+    model: "gpt-3.5-turbo",
+    messages: [
+      { role: "system", content: "あなたは優しく丁寧な風水アドバイザーです。恋愛運、金運、仕事運などに対して、実践的で簡単なアドバイスをしてください。" },
+      { role: "user", content: userMessage }
+    ]
+  });
+  return chat.data.choices[0].message.content.trim();
+}
+
+// ✅ 商品リスト取得（Google Sheets）
+async function getProductList() {
+  const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+  await doc.useServiceAccountAuth(GOOGLE_SERVICE_ACCOUNT);
+  await doc.loadInfo();
+  const sheet = doc.sheetsByTitle["商品リスト"];
+  const rows = await sheet.getRows();
+  return rows.map(row => ({
+    name: row["商品名"],
+    description: row["商品説明"],
+    url: row["商品リンク"]
+  }));
+}
+
+// ✅ 商品提案ロジック
+function recommendItem(userMessage, items) {
+  const keyword = userMessage.toLowerCase();
+  for (let item of items) {
+    const text = `${item.name} ${item.description}`.toLowerCase();
+    if (text.includes(keyword)) {
+      return `${item.name}\n${item.description}\n購入はこちら: ${item.url}`;
+    }
+  }
+  return "今のご相談にぴったりの商品はまだ準備中です✨";
+}
+
+// ✅ LINEに返信
+async function replyToLINE(token, message) {
+  await fetch("https://api.line.me/v2/bot/message/reply", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${LINE_ACCESS_TOKEN}`
+    },
+    body: JSON.stringify({
+      replyToken: token,
+      messages: [{ type: "text", text: message }]
+    })
+  });
+}
+
+// ✅ サーバー起動
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
