@@ -1,7 +1,6 @@
 {
   "name": "line-fengshui-bot",
   "version": "1.0.0",
-  "description": "Line Bot for Feng Shui advice",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
