@@ -31,8 +31,8 @@ app.post("/", async (req, res) => {
     return res.status(403).send("Invalid signature");
   }
 
-  const event = req.body.events[0];
-  const userMessage = event.message?.text || "メッセージがありません";
+const event = req.body.events?.[0];
+const userMessage = event?.message?.text || "メッセージがありません";
   const replyToken = event.replyToken;
 
   const advice = await getChatGPTAdvice(userMessage);
