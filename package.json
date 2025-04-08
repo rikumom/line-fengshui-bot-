@@ -2,11 +2,13 @@
   "name": "line-fengshui-bot",
   "version": "1.0.0",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "@line/bot-sdk": "^7.5.0"
+    "google-spreadsheet": "^3.3.0",
+    "axios": "^1.3.6",
+    "express": "^4.18.2"
   }
 }
