@@ -1,114 +1,91 @@
-// ✅ 必要なライブラリ
 const express = require("express");
+const line = require("@line/bot-sdk");
 const { GoogleSpreadsheet } = require("google-spreadsheet");
-const { Configuration, OpenAIApi } = require("openai");
-const crypto = require("crypto");
+const OpenAI = require("openai");
+require("dotenv").config();
+
 const app = express();
+app.use(express.json());
 
-// ✅ 環境変数
-const LINE_ACCESS_TOKEN = process.env.LINE_ACCESS_TOKEN;
-const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
-const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+const config = {
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
+};
+const client = new line.Client(config);
 
-// ✅ 署名検証用関数
-function validateSignature(signature, body) {
-  const hash = crypto
-    .createHmac("SHA256", LINE_CHANNEL_SECRET)
-    .update(body)
-    .digest("base64");
-  return hash === signature;
-}
+// OpenAIの設定
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ✅ 生データ保持用
-app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
+// Googleスプレッドシートの設定
+const doc = new GoogleSpreadsheet(process.env.SHEET_ID);
+const auth = {
+  client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+};
 
-// ✅ 受信処理
-app.post("/", async (req, res) => {
-  const signature = req.headers["x-line-signature"];
-  if (!validateSignature(signature, req.rawBody)) {
-    return res.status(403).send("Invalid signature");
-  }
+// Webhookエンドポイント
+app.post("/webhook", line.middleware(config), async (req, res) => {
+  const events = req.body.events;
 
-  // 🔽 イベントが空ならOK返す（Webhookテスト対策）
-  if (!req.body.events || req.body.events.length === 0) {
-    console.log("📦 空のイベントを受信（テスト用）");
-    return res.status(200).send("No events to process");
-  }
+  await Promise.all(events.map(async (event) => {
+    if (event.type === "message" && event.message.type === "text") {
+      const userMessage = event.message.text;
 
-  const event = req.body.events[0];
-  const userMessage = event?.message?.text || "メッセージがありません";
-  const replyToken = event?.replyToken;
+      // GPTに質問
+      let gptReply = "";
+      try {
+        const completion = await openai.chat.completions.create({
+          model: "gpt-3.5-turbo",
+          messages: [
+            {
+              role: "system",
+              content: "あなたは風水・スピリチュアルの専門家であり、ユーザーの悩みに親身にアドバイスし、必要に応じて関連商品の提案も行います。",
+            },
+            {
+              role: "user",
+              content: userMessage,
+            },
+          ],
+        });
+        gptReply = completion.choices[0].message.content;
+      } catch (err) {
+        console.error("ChatGPTエラー:", err);
+        gptReply = "ごめんなさい、ただいまアドバイスができませんでした…";
+      }
 
-  try {
-    const advice = await getChatGPTAdvice(userMessage);
-    const items = await getProductList();
-    const recommended = recommendItem(userMessage, items);
-    const replyMessage = `${advice}\n\n【おすすめアイテム】\n${recommended}`;
-    await replyToLINE(replyToken, replyMessage);
-    res.send("OK");
-  } catch (error) {
-    console.error("❌ エラー:", error);
-    res.status(500).send("Internal Server Error");
-  }
+      // スプレッドシートから商品提案
+      let productReply = "";
+      try {
+        await doc.useServiceAccountAuth(auth);
+        await doc.loadInfo();
+        const sheet = doc.sheetsByTitle["商品リスト"];
+        const rows = await sheet.getRows();
+
+        const matched = rows.find((row) => {
+          const keywords = row.悩みキーワード?.split(",").map(k => k.trim());
+          return keywords?.some((k) => userMessage.includes(k));
+        });
+
+        if (matched) {
+          productReply = `\n\n【おすすめ商品】\n${matched.商品名}\n${matched.商品説明}\n${matched.URL}`;
+        }
+      } catch (err) {
+        console.error("スプレッドシートエラー:", err);
+      }
+
+      // LINEへ返信
+      const finalReply = gptReply + productReply;
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: finalReply,
+      });
+    }
+  }));
+
+  res.status(200).end();
 });
 
-// ✅ ChatGPTから風水アドバイスを取得
-async function getChatGPTAdvice(userMessage) {
-  const config = new Configuration({ apiKey: OPENAI_API_KEY });
-  const openai = new OpenAIApi(config);
-  const chat = await openai.createChatCompletion({
-    model: "gpt-3.5-turbo",
-    messages: [
-      { role: "system", content: "あなたは優しく丁寧な風水アドバイザーです。恋愛運、金運、仕事運などに対して、実践的で簡単なアドバイスをしてください。" },
-      { role: "user", content: userMessage }
-    ]
-  });
-  return chat.data.choices[0].message.content.trim();
-}
-
-// ✅ 商品リスト取得（Google Sheets）
-async function getProductList() {
-  const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
-  await doc.useServiceAccountAuth(GOOGLE_SERVICE_ACCOUNT);
-  await doc.loadInfo();
-  const sheet = doc.sheetsByTitle["商品リスト"];
-  const rows = await sheet.getRows();
-  return rows.map(row => ({
-    name: row["商品名"],
-    description: row["商品説明"],
-    url: row["商品リンク"]
-  }));
-}
-
-// ✅ 商品提案ロジック
-function recommendItem(userMessage, items) {
-  const keyword = userMessage.toLowerCase();
-  for (let item of items) {
-    const text = `${item.name} ${item.description}`.toLowerCase();
-    if (text.includes(keyword)) {
-      return `${item.name}\n${item.description}\n購入はこちら: ${item.url}`;
-    }
-  }
-  return "今のご相談にぴったりの商品はまだ準備中です✨";
-}
-
-// ✅ LINEに返信
-async function replyToLINE(token, message) {
-  await fetch("https://api.line.me/v2/bot/message/reply", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${LINE_ACCESS_TOKEN}`
-    },
-    body: JSON.stringify({
-      replyToken: token,
-      messages: [{ type: "text", text: message }]
-    })
-  });
-}
-
-// ✅ サーバー起動
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`BOTが起動しました（PORT: ${port}）`);
+});
