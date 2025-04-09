@@ -1,11 +1,7 @@
 {
-  "name": "fengshui-linebot",
-  "version": "1.0.0",
-  "main": "index.js",
   "dependencies": {
     "express": "^4.18.2",
-    "openai": "^4.0.0",
     "google-spreadsheet": "^3.3.0",
-    "node-fetch": "^2.6.7"
+    "openai": "^3.2.1"
   }
 }
