@@ -5,7 +5,6 @@ const OpenAI = require("openai");
 require("dotenv").config();
 
 const app = express();
-app.use(express.json());
 
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -23,7 +22,7 @@ const auth = {
   private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
 };
 
-// Webhookエンドポイント
+// ✅ webhookには middleware を直接適用（jsonはまだ使わない）
 app.post("/webhook", line.middleware(config), async (req, res) => {
   const events = req.body.events;
 
@@ -84,6 +83,9 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
   res.status(200).end();
 });
+
+// ✅ その他のAPIやルートには json() を使う（必要なら）
+app.use(express.json());
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
