@@ -1,18 +1,18 @@
-// ✅ 必要なライブラリ
 const express = require("express");
 const { GoogleSpreadsheet } = require("google-spreadsheet");
 const { Configuration, OpenAIApi } = require("openai");
 const crypto = require("crypto");
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 const app = express();
 
-// ✅ 環境変数
+// 環境変数
 const LINE_ACCESS_TOKEN = process.env.LINE_ACCESS_TOKEN;
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
 
-// ✅ 署名検証用関数
+// 署名検証
 function validateSignature(signature, body) {
   const hash = crypto
     .createHmac("SHA256", LINE_CHANNEL_SECRET)
@@ -21,10 +21,12 @@ function validateSignature(signature, body) {
   return hash === signature;
 }
 
-// ✅ 生データ保持用
-app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
+// 生データ保持
+app.use(express.json({
+  verify: (req, res, buf) => { req.rawBody = buf; }
+}));
 
-// ✅ 受信処理
+// Webhook受信
 app.post("/", async (req, res) => {
   const signature = req.headers["x-line-signature"];
   if (!validateSignature(signature, req.rawBody)) {
@@ -32,38 +34,49 @@ app.post("/", async (req, res) => {
   }
 
   const event = req.body.events?.[0];
-  if (!event) {
-    return res.status(200).send("No event");
+  if (!event || !event.message || !event.replyToken) {
+    return res.status(200).send("No valid message event");
   }
 
-  const userMessage = event?.message?.text || "メッセージがありません";
+  const userMessage = event.message.text;
   const replyToken = event.replyToken;
 
-  const advice = await getChatGPTAdvice(userMessage);
-  const items = await getProductList();
-  const recommended = recommendItem(userMessage, items);
+  try {
+    const advice = await getChatGPTAdvice(userMessage);
+    const items = await getProductList();
+    const recommended = recommendItem(userMessage, items);
 
-  const replyMessage = `${advice}\n\n【おすすめアイテム】\n${recommended}`;
-  await replyToLINE(replyToken, replyMessage);
+    const replyMessage = `${advice}\n\n【おすすめアイテム】\n${recommended}`;
+    await replyToLINE(replyToken, replyMessage);
 
-  res.send("OK");
+    res.send("OK");
+  } catch (error) {
+    console.error("処理中にエラー:", error);
+    res.status(500).send("Internal Server Error");
+  }
 });
 
-// ✅ ChatGPTから風水アドバイスを取得
+// ChatGPTの回答を取得
 async function getChatGPTAdvice(userMessage) {
   const config = new Configuration({ apiKey: OPENAI_API_KEY });
   const openai = new OpenAIApi(config);
   const chat = await openai.createChatCompletion({
     model: "gpt-3.5-turbo",
     messages: [
-      { role: "system", content: "あなたは優しく丁寧な風水アドバイザーです。恋愛運、金運、仕事運などに対して、実践的で簡単なアドバイスをしてください。" },
-      { role: "user", content: userMessage }
+      {
+        role: "system",
+        content: "あなたは優しく丁寧な風水アドバイザーです。恋愛運、金運、仕事運などに対して、実践的で簡単なアドバイスをしてください。"
+      },
+      {
+        role: "user",
+        content: userMessage
+      }
     ]
   });
   return chat.data.choices[0].message.content.trim();
 }
 
-// ✅ 商品リスト取得（Google Sheets）
+// 商品リストを取得（Google Sheets）
 async function getProductList() {
   const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
   await doc.useServiceAccountAuth(GOOGLE_SERVICE_ACCOUNT);
@@ -77,7 +90,7 @@ async function getProductList() {
   }));
 }
 
-// ✅ 商品提案ロジック
+// 商品を選ぶロジック
 function recommendItem(userMessage, items) {
   const keyword = userMessage.toLowerCase();
   for (let item of items) {
@@ -89,7 +102,7 @@ function recommendItem(userMessage, items) {
   return "今のご相談にぴったりの商品はまだ準備中です✨";
 }
 
-// ✅ LINEに返信
+// LINEへ返信
 async function replyToLINE(token, message) {
   await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
@@ -104,6 +117,6 @@ async function replyToLINE(token, message) {
   });
 }
 
-// ✅ サーバー起動
+// サーバー起動
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
