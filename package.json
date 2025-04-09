@@ -1,7 +1,19 @@
 {
+  "name": "line-fengshui-bot",
+  "version": "1.0.0",
+  "description": "LINE bot for feng shui advice and product recommendations",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
     "express": "^4.18.2",
     "google-spreadsheet": "^3.3.0",
-    "openai": "^3.2.1"
+    "openai": "^3.2.1",
+    "crypto": "^1.0.1",
+    "node-fetch": "^2.6.7"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
