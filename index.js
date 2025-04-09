@@ -16,7 +16,7 @@ const client = new line.Client(config);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Googleスプレッドシートの設定
-const doc = new GoogleSpreadsheet(process.env.SHEET_ID);
+const doc = new GoogleSpreadsheet(process.env.SPREADSHEET_ID); // ←ここ修正済み！
 const auth = {
   client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
   private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
