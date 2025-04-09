@@ -1,8 +1,7 @@
 const express = require("express");
 const { GoogleSpreadsheet } = require("google-spreadsheet");
-const { Configuration, OpenAIApi } = require("openai");
+const { OpenAI } = require("openai");
 const crypto = require("crypto");
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 const app = express();
 
 // 環境変数
@@ -14,17 +13,11 @@ const GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
 
 // 署名検証
 function validateSignature(signature, body) {
-  const hash = crypto
-    .createHmac("SHA256", LINE_CHANNEL_SECRET)
-    .update(body)
-    .digest("base64");
+  const hash = crypto.createHmac("SHA256", LINE_CHANNEL_SECRET).update(body).digest("base64");
   return hash === signature;
 }
 
-// 生データ保持
-app.use(express.json({
-  verify: (req, res, buf) => { req.rawBody = buf; }
-}));
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 // Webhook受信
 app.post("/", async (req, res) => {
@@ -33,9 +26,9 @@ app.post("/", async (req, res) => {
     return res.status(403).send("Invalid signature");
   }
 
-  const event = req.body.events?.[0];
-  if (!event || !event.message || !event.replyToken) {
-    return res.status(200).send("No valid message event");
+  const event = req.body?.events?.[0];
+  if (!event || !event.message?.text) {
+    return res.status(400).send("Invalid event format");
   }
 
   const userMessage = event.message.text;
@@ -50,33 +43,26 @@ app.post("/", async (req, res) => {
     await replyToLINE(replyToken, replyMessage);
 
     res.send("OK");
-  } catch (error) {
-    console.error("処理中にエラー:", error);
-    res.status(500).send("Internal Server Error");
+  } catch (err) {
+    console.error("処理中にエラー:", err);
+    res.status(500).send("Internal Error");
   }
 });
 
-// ChatGPTの回答を取得
+// ChatGPT呼び出し
 async function getChatGPTAdvice(userMessage) {
-  const config = new Configuration({ apiKey: OPENAI_API_KEY });
-  const openai = new OpenAIApi(config);
-  const chat = await openai.createChatCompletion({
+  const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+  const chat = await openai.chat.completions.create({
     model: "gpt-3.5-turbo",
     messages: [
-      {
-        role: "system",
-        content: "あなたは優しく丁寧な風水アドバイザーです。恋愛運、金運、仕事運などに対して、実践的で簡単なアドバイスをしてください。"
-      },
-      {
-        role: "user",
-        content: userMessage
-      }
+      { role: "system", content: "あなたは優しく丁寧な風水アドバイザーです。恋愛運、金運、仕事運などに対して、実践的で簡単なアドバイスをしてください。" },
+      { role: "user", content: userMessage }
     ]
   });
-  return chat.data.choices[0].message.content.trim();
+  return chat.choices[0].message.content.trim();
 }
 
-// 商品リストを取得（Google Sheets）
+// スプシから商品読み込み
 async function getProductList() {
   const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
   await doc.useServiceAccountAuth(GOOGLE_SERVICE_ACCOUNT);
@@ -90,7 +76,7 @@ async function getProductList() {
   }));
 }
 
-// 商品を選ぶロジック
+// 商品提案
 function recommendItem(userMessage, items) {
   const keyword = userMessage.toLowerCase();
   for (let item of items) {
@@ -102,7 +88,7 @@ function recommendItem(userMessage, items) {
   return "今のご相談にぴったりの商品はまだ準備中です✨";
 }
 
-// LINEへ返信
+// LINE返信
 async function replyToLINE(token, message) {
   await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
@@ -117,6 +103,6 @@ async function replyToLINE(token, message) {
   });
 }
 
-// サーバー起動
+// 起動
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server running on ${PORT}`));
