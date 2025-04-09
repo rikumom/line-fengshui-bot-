@@ -22,7 +22,7 @@ const auth = {
   private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
 };
 
-// ✅ webhookには middleware を直接適用（jsonはまだ使わない）
+// webhook
 app.post("/webhook", line.middleware(config), async (req, res) => {
   const events = req.body.events;
 
@@ -30,49 +30,70 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
     if (event.type === "message" && event.message.type === "text") {
       const userMessage = event.message.text;
 
-      // GPTに質問
+      await doc.useServiceAccountAuth(auth);
+      await doc.loadInfo();
+
+      // ✅ キャッシュシートを読み込む
+      const cacheSheet = doc.sheetsByTitle["キャッシュ"];
+      const cacheRows = await cacheSheet.getRows();
+
+      // ✅ キャッシュ確認
+      const cached = cacheRows.find(row => row.メッセージ === userMessage);
       let gptReply = "";
-      try {
-        const completion = await openai.chat.completions.create({
-          model: "gpt-3.5-turbo",
-          messages: [
-            {
-              role: "system",
-              content: "あなたは風水・スピリチュアルの専門家であり、ユーザーの悩みに親身にアドバイスし、必要に応じて関連商品の提案も行います。",
-            },
-            {
-              role: "user",
-              content: userMessage,
-            },
-          ],
-        });
-        gptReply = completion.choices[0].message.content;
-      } catch (err) {
-        console.error("ChatGPTエラー:", err);
-        gptReply = "ごめんなさい、ただいまアドバイスができませんでした…";
+
+      if (cached) {
+        console.log("キャッシュから応答を取得しました");
+        gptReply = cached.GPT回答;
+      } else {
+        console.log("GPTに新規リクエストを送信");
+        try {
+          const completion = await openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: [
+              {
+                role: "system",
+                content: "あなたは風水・スピリチュアルの専門家であり、ユーザーの悩みに親身にアドバイスし、必要に応じて関連商品の提案も行います。",
+              },
+              {
+                role: "user",
+                content: userMessage,
+              },
+            ],
+          });
+          gptReply = completion.choices[0].message.content;
+
+          // ✅ GPTの返答をキャッシュに保存
+          await cacheSheet.addRow({
+            日時: new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }),
+            メッセージ: userMessage,
+            GPT回答: gptReply,
+          });
+        } catch (err) {
+          console.error("ChatGPTエラー:", err);
+          gptReply = "ごめんなさい、ただいまアドバイスができませんでした…";
+        }
       }
 
-      // スプレッドシートから商品提案
+      // ✅ 商品提案（商品リストからキーワード一致）
       let productReply = "";
       try {
-        await doc.useServiceAccountAuth(auth);
-        await doc.loadInfo();
-        const sheet = doc.sheetsByTitle["商品リスト"];
-        const rows = await sheet.getRows();
+        const productSheet = doc.sheetsByTitle["商品リスト"];
+        const rows = await productSheet.getRows();
 
         const matched = rows.find((row) => {
           const keywords = row.悩みキーワード?.split(",").map(k => k.trim());
-          return keywords?.some((k) => userMessage.includes(k));
+          return keywords?.some((k) =>
+            userMessage.includes(k) || k.includes(userMessage)
+          );
         });
 
         if (matched) {
-          productReply = `\n\n【おすすめ商品】\n${matched.商品名}\n${matched.商品説明}\n${matched.URL}`;
+          productReply = `\n\n【おすすめ商品】\n${matched.商品名}\n${matched.商品説明}\n${matched.商品リンク}`;
         }
       } catch (err) {
-        console.error("スプレッドシートエラー:", err);
+        console.error("商品提案エラー:", err);
       }
 
-      // LINEへ返信
       const finalReply = gptReply + productReply;
       await client.replyMessage(event.replyToken, {
         type: "text",
@@ -84,7 +105,6 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
   res.status(200).end();
 });
 
-// ✅ その他のAPIやルートには json() を使う（必要なら）
 app.use(express.json());
 
 const port = process.env.PORT || 3000;
